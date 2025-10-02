@@ -280,7 +280,7 @@ router.post('/stop-exchange/:placeId', verifyToken, restrictTo('owner'), async (
   }
 });
 
-router.put('product/:productId', async (req, res) => {
+router.put('/product/:productId', async (req, res) => {
   try {
     const { productId } = req.params;
     
