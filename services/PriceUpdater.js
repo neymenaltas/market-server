@@ -1,87 +1,97 @@
 const Product = require('../models/Product');
 const PriceHistory = require('../models/PriceHistory');
-const Order = require('../models/Order'); // Sipariş modeliniz
+const Order = require('../models/Order');
 
 class PriceUpdater {
   constructor() {
     this.intervals = new Map();
     this.isRunning = false;
     this.placeIntervals = new Map();
-    // Her ürün için sipariş sayacı
     this.orderCounts = new Map();
-    // Fiyat momentum takibi (trend)
     this.priceMomentum = new Map();
   }
 
-  // Sipariş bazlı fiyat hesaplama
-  calculateOrderBasedPrice(product, orderCount, totalOrders) {
+  // Sipariş bazlı fiyat hesaplama - DÜZELTİLMİŞ
+  calculateOrderBasedPrice(product, orderCount, allOrderCounts) {
     const { currentPrice, minPrice, maxPrice, regularPrice } = product;
     
-    // Güvenli varsayılan değerler
     const min = minPrice || regularPrice * 0.7;
     const max = maxPrice || regularPrice * 1.5;
     const current = currentPrice || regularPrice;
     
-    // Ürünün toplam siparişler içindeki oranı (0-1 arası)
-    const orderRatio = totalOrders > 0 ? orderCount / totalOrders : 0;
-    
     // Mevcut fiyatın min-max aralığındaki konumu (0-1 arası)
     const pricePosition = (current - min) / (max - min);
     
-    // Sipariş yoğunluğuna göre hedef konum belirleme
-    // orderRatio yüksekse -> maxPrice'a yaklaşmalı
-    // orderRatio düşükse -> minPrice'a yaklaşmalı
+    // ÖNEMLİ: Her ürünün sipariş sayısını normalize et
+    // En çok sipariş alan ürünü bul
+    const maxOrderCount = Math.max(...Array.from(allOrderCounts.values()), 1);
+    
+    // Bu ürünün normalize edilmiş sipariş oranı (0-1 arası)
+    const normalizedOrderRatio = orderCount / maxOrderCount;
+    
+    // Hedef konum belirleme - SİPARİŞ ALAN ÜRÜN YÜKSELİR
     let targetPosition;
     
-    if (orderRatio > 0.3) {
-      // Popüler ürün: fiyat yükselmeli (DAHA YAVAS)
-      targetPosition = 0.4 + (orderRatio * 0.4); // 0.4 ile 0.8 arası (önceden 0.5-1.0)
-    } else if (orderRatio < 0.1) {
-      // Az sipariş alan ürün: fiyat düşmeli (DAHA HIZLI)
-      targetPosition = orderRatio * 3; // 0 ile 0.3 arası (önceden 0-0.5)
+    if (normalizedOrderRatio > 0.5) {
+      // ÇOK POPÜLER: Fiyat yükselmeli (0.6-0.9 arası)
+      targetPosition = 0.6 + (normalizedOrderRatio * 0.3);
+    } else if (normalizedOrderRatio > 0.2) {
+      // ORTA POPÜLER: Hafif yükseliş (0.4-0.6 arası)
+      targetPosition = 0.4 + (normalizedOrderRatio * 0.4);
+    } else if (normalizedOrderRatio > 0) {
+      // AZ POPÜLER: Yavaş düşüş (0.2-0.4 arası)
+      targetPosition = 0.2 + (normalizedOrderRatio * 1.0);
     } else {
-      // Orta seviye: düşüşe meyilli
-      targetPosition = 0.25 + (orderRatio * 0.5); // 0.25-0.4 arası (önceden 0.3-1.0)
+      // HİÇ SİPARİŞ YOK: Hızlı düşüş (0-0.2 arası)
+      targetPosition = pricePosition * 0.4; // Mevcut pozisyondan %60 düşer
     }
     
-    // Momentum faktörü: ani fiyat değişimlerini önle
+    // Momentum faktörü
     const momentumKey = product._id.toString();
     const previousMomentum = this.priceMomentum.get(momentumKey) || pricePosition;
     
-    // Yavaş geçiş (momentum smoothing)
-    // Düşüşte daha hızlı, yükselişte daha yavaş
+    // Değişim hızı - Sipariş alan ürünler daha hızlı yükselir
     let changeSpeed;
-    if (targetPosition < previousMomentum) {
-      // Fiyat düşüyorsa: DAHA HIZLI
-      changeSpeed = 0.25 + (orderRatio * 0.10); // %25-35 hızla düşer
+    if (targetPosition > previousMomentum) {
+      // Fiyat YÜKSELİYORSA ve sipariş aldıysa: HIZLI
+      if (normalizedOrderRatio > 0.3) {
+        changeSpeed = 0.25; // %25 hızla yükselir
+      } else {
+        changeSpeed = 0.15; // %15 hızla yükselir
+      }
     } else {
-      // Fiyat yükseliyorsa: DAHA YAVAS
-      changeSpeed = 0.08 + (orderRatio * 0.12); // %8-20 hızla yükselir
+      // Fiyat DÜŞÜYORSA: Sipariş almayanlarda hızlı düşer
+      if (normalizedOrderRatio === 0) {
+        changeSpeed = 0.30; // %30 hızla düşer
+      } else {
+        changeSpeed = 0.15; // %15 hızla düşer
+      }
     }
     
     const smoothedPosition = previousMomentum + ((targetPosition - previousMomentum) * changeSpeed);
-    
-    // Momentum güncelle
     this.priceMomentum.set(momentumKey, smoothedPosition);
     
     // Yeni fiyat hesapla
     let newPrice = min + (smoothedPosition * (max - min));
     
-    // Ekstrem değişimleri sınırla (düşüş için %7, yükseliş için %3)
+    // Maksimum değişim sınırı
     let maxChange;
-    if (newPrice < current) {
-      // Düşüşte daha fazla hareket
-      maxChange = current * 0.1; // %10'ye kadar düşebilir
+    if (newPrice > current && normalizedOrderRatio > 0.2) {
+      // SİPARİŞ ALAN ÜRÜN YÜKSELİYOR: %8'e kadar
+      maxChange = current * 0.08;
+    } else if (newPrice < current) {
+      // DÜŞÜŞ: %10'a kadar
+      maxChange = current * 0.10;
     } else {
-      // Yükselişte daha az hareket
-      maxChange = current * 0.05; // %5'e kadar yükselebilir
+      // NORMAL YÜKSELİŞ: %5'e kadar
+      maxChange = current * 0.05;
     }
     
     if (Math.abs(newPrice - current) > maxChange) {
       newPrice = current + (Math.sign(newPrice - current) * maxChange);
     }
     
-    // Min-max sınırlarına uygunluğu garanti et
+    // Min-max sınırları
     newPrice = Math.max(min, Math.min(max, newPrice));
     
     return Math.round(newPrice * 100) / 100;
@@ -90,7 +100,6 @@ class PriceUpdater {
   // Sipariş alındığında fiyatları güncelle
   async updatePricesOnOrder(orderedProductIds, placeId) {
     try {
-      // Place'deki tüm ürünleri al
       const allProducts = await Product.find({ placeId });
       
       if (allProducts.length === 0) {
@@ -105,10 +114,7 @@ class PriceUpdater {
         this.orderCounts.set(key, currentCount + 1);
       });
 
-      // Toplam sipariş sayısını hesapla
-      const totalOrderCount = Array.from(this.orderCounts.values())
-        .reduce((sum, count) => sum + count, 0);
-
+      // Tüm sipariş sayılarını Map olarak geç
       const results = [];
 
       // Tüm ürünler için fiyat güncelle
@@ -120,12 +126,13 @@ class PriceUpdater {
         const newPrice = this.calculateOrderBasedPrice(
           product,
           orderCount,
-          totalOrderCount
+          this.orderCounts // Tüm sipariş sayılarını gönder
         );
 
         // Fiyat değişimi varsa güncelle
         if (Math.abs(newPrice - oldPrice) > 0.01) {
           const changePercentage = ((newPrice - oldPrice) / oldPrice) * 100;
+          const isOrdered = orderedProductIds.includes(product._id.toString());
 
           product.previousPrice = oldPrice;
           product.currentPrice = newPrice;
@@ -137,13 +144,14 @@ class PriceUpdater {
             oldPrice,
             newPrice,
             changePercentage: parseFloat(changePercentage.toFixed(2)),
-            reason: 'order_based' // Neden bilgisi eklenebilir
+            reason: isOrdered ? 'order_received' : 'market_adjustment'
           });
           await priceHistory.save();
 
+          const orderInfo = isOrdered ? '📈 ORDERED' : '📉 Market';
           console.log(
-            `Product ${product.productName}: ${oldPrice} -> ${newPrice} ` +
-            `(${changePercentage.toFixed(2)}%) [Orders: ${orderCount}/${totalOrderCount}]`
+            `${orderInfo} | ${product.productName}: ${oldPrice.toFixed(2)} -> ${newPrice.toFixed(2)} ` +
+            `(${changePercentage > 0 ? '+' : ''}${changePercentage.toFixed(2)}%) [Orders: ${orderCount}]`
           );
 
           results.push({ product, priceHistory });
@@ -161,10 +169,9 @@ class PriceUpdater {
   // Periyodik sipariş verisi temizleme ve dengeleme
   async rebalancePrices(placeId) {
     try {
-      // Sipariş sayılarını %35 azalt (daha hızlı eskitme - önceden %20)
-      // Bu sayede fiyatlar daha hızlı düşer
+      // Sipariş sayılarını %35 azalt
       this.orderCounts.forEach((count, key) => {
-        this.orderCounts.set(key, Math.floor(count * 0.65)); // 0.65 = %35 azaltma
+        this.orderCounts.set(key, Math.floor(count * 0.65));
       });
 
       // 0 olan kayıtları temizle
@@ -181,8 +188,8 @@ class PriceUpdater {
     }
   }
 
-  // Periyodik dengeleme interval'i başlat (opsiyonel)
-  startRebalanceInterval(placeId, intervalMs = 300000) { // 5 dakikada bir
+  // Periyodik dengeleme interval'i başlat
+  startRebalanceInterval(placeId, intervalMs = 300000) {
     const interval = setInterval(async () => {
       await this.rebalancePrices(placeId);
     }, intervalMs);
@@ -211,7 +218,6 @@ class PriceUpdater {
 
   // Sipariş verilerini sıfırla
   resetOrderCounts(placeId) {
-    // Belirli bir place için sıfırlama yapılabilir
     this.orderCounts.clear();
     this.priceMomentum.clear();
     console.log(`Reset order counts for place ${placeId}`);
