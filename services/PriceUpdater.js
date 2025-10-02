@@ -1,269 +1,242 @@
 const Product = require('../models/Product');
 const PriceHistory = require('../models/PriceHistory');
+const Order = require('../models/Order'); // Sipariş modeliniz
 
 class PriceUpdater {
   constructor() {
     this.intervals = new Map();
     this.isRunning = false;
-    this.placeIntervals = new Map(); // Place bazlı interval takibi için
+    this.placeIntervals = new Map();
+    // Her ürün için sipariş sayacı
+    this.orderCounts = new Map();
+    // Fiyat momentum takibi (trend)
+    this.priceMomentum = new Map();
   }
 
-  // Rastgele fiyat üretme (-%10 ile +%10 arası)
-  generateRandomPrice(currentPrice, minPrice, maxPrice) {
-    // Mevcut fiyata göre -%10 ve +%10 aralığı hesapla
-    const min = currentPrice * 0.9;
-    const max = currentPrice * 1.1;
+  // Sipariş bazlı fiyat hesaplama
+  calculateOrderBasedPrice(product, orderCount, totalOrders) {
+    const { currentPrice, minPrice, maxPrice, regularPrice } = product;
     
-    // 0.01'lik adımlarla rastgele fiyat
-    let randomPrice = Math.random() * (max - min) + min;
+    // Güvenli varsayılan değerler
+    const min = minPrice || regularPrice * 0.7;
+    const max = maxPrice || regularPrice * 1.5;
+    const current = currentPrice || regularPrice;
     
-    // Min ve max fiyat sınırlarını kontrol et
-    if (minPrice !== undefined && minPrice !== null) {
-      randomPrice = Math.max(minPrice, randomPrice);
+    // Ürünün toplam siparişler içindeki oranı (0-1 arası)
+    const orderRatio = totalOrders > 0 ? orderCount / totalOrders : 0;
+    
+    // Mevcut fiyatın min-max aralığındaki konumu (0-1 arası)
+    const pricePosition = (current - min) / (max - min);
+    
+    // Sipariş yoğunluğuna göre hedef konum belirleme
+    // orderRatio yüksekse -> maxPrice'a yaklaşmalı
+    // orderRatio düşükse -> minPrice'a yaklaşmalı
+    let targetPosition;
+    
+    if (orderRatio > 0.3) {
+      // Popüler ürün: fiyat yükselmeli (DAHA YAVAS)
+      targetPosition = 0.4 + (orderRatio * 0.4); // 0.4 ile 0.8 arası (önceden 0.5-1.0)
+    } else if (orderRatio < 0.1) {
+      // Az sipariş alan ürün: fiyat düşmeli (DAHA HIZLI)
+      targetPosition = orderRatio * 3; // 0 ile 0.3 arası (önceden 0-0.5)
+    } else {
+      // Orta seviye: düşüşe meyilli
+      targetPosition = 0.25 + (orderRatio * 0.5); // 0.25-0.4 arası (önceden 0.3-1.0)
     }
     
-    if (maxPrice !== undefined && maxPrice !== null) {
-      randomPrice = Math.min(maxPrice, randomPrice);
+    // Momentum faktörü: ani fiyat değişimlerini önle
+    const momentumKey = product._id.toString();
+    const previousMomentum = this.priceMomentum.get(momentumKey) || pricePosition;
+    
+    // Yavaş geçiş (momentum smoothing)
+    // Düşüşte daha hızlı, yükselişte daha yavaş
+    let changeSpeed;
+    if (targetPosition < previousMomentum) {
+      // Fiyat düşüyorsa: DAHA HIZLI
+      changeSpeed = 0.25 + (orderRatio * 0.10); // %25-35 hızla düşer
+    } else {
+      // Fiyat yükseliyorsa: DAHA YAVAS
+      changeSpeed = 0.08 + (orderRatio * 0.12); // %8-20 hızla yükselir
     }
     
-    return Math.round(randomPrice * 100) / 100; // 2 ondalık basamak
+    const smoothedPosition = previousMomentum + ((targetPosition - previousMomentum) * changeSpeed);
+    
+    // Momentum güncelle
+    this.priceMomentum.set(momentumKey, smoothedPosition);
+    
+    // Yeni fiyat hesapla
+    let newPrice = min + (smoothedPosition * (max - min));
+    
+    // Ekstrem değişimleri sınırla (düşüş için %7, yükseliş için %3)
+    let maxChange;
+    if (newPrice < current) {
+      // Düşüşte daha fazla hareket
+      maxChange = current * 0.1; // %10'ye kadar düşebilir
+    } else {
+      // Yükselişte daha az hareket
+      maxChange = current * 0.05; // %5'e kadar yükselebilir
+    }
+    
+    if (Math.abs(newPrice - current) > maxChange) {
+      newPrice = current + (Math.sign(newPrice - current) * maxChange);
+    }
+    
+    // Min-max sınırlarına uygunluğu garanti et
+    newPrice = Math.max(min, Math.min(max, newPrice));
+    
+    return Math.round(newPrice * 100) / 100;
   }
 
-  // Tekil ürün fiyat güncelleme
-  async updateProductPrice(productId) {
+  // Sipariş alındığında fiyatları güncelle
+  async updatePricesOnOrder(orderedProductIds, placeId) {
     try {
-      const product = await Product.findById(productId);
+      // Place'deki tüm ürünleri al
+      const allProducts = await Product.find({ placeId });
       
-      if (!product) {
-        console.log(`Product with ID ${productId} not found`);
-        return null;
+      if (allProducts.length === 0) {
+        console.log(`No products found for place ${placeId}`);
+        return [];
       }
 
-      // Eğer currentPrice yoksa, regularPrice'dan başlat
-      if (product.currentPrice === undefined || product.currentPrice === null) {
-        product.currentPrice = product.regularPrice;
-        await product.save();
-      }
-
-      const oldPrice = product.currentPrice;
-      let newPrice = this.generateRandomPrice(
-        oldPrice, 
-        product.minPrice, 
-        product.maxPrice
-      );
-
-      // Fiyat değişim yüzdesi
-      const changePercentage = ((newPrice - oldPrice) / oldPrice) * 100;
-
-      // Ürün fiyatını güncelle
-      product.previousPrice = oldPrice;
-      product.currentPrice = newPrice;
-
-      await product.save();
-
-      // PriceHistory'ye kaydet
-      const priceHistory = new PriceHistory({
-        productId: product._id,
-        oldPrice,
-        newPrice,
-        changePercentage: parseFloat(changePercentage.toFixed(2))
+      // Her ürün için sipariş sayısını güncelle
+      orderedProductIds.forEach(productId => {
+        const key = productId.toString();
+        const currentCount = this.orderCounts.get(key) || 0;
+        this.orderCounts.set(key, currentCount + 1);
       });
 
-      await priceHistory.save();
+      // Toplam sipariş sayısını hesapla
+      const totalOrderCount = Array.from(this.orderCounts.values())
+        .reduce((sum, count) => sum + count, 0);
 
-      console.log(`Product ${product.productName} price updated: ${oldPrice} -> ${newPrice} (${changePercentage.toFixed(2)}%)`);
-
-      return { product, priceHistory };
-
-    } catch (error) {
-      console.error('Error updating product price:', error);
-      throw error;
-    }
-  }
-
-  // Belirli bir yer (place) için ürün fiyatlarını güncelle
-  async updateProductsByPlace(placeId) {
-    try {
-      const products = await Product.find({ placeId });
-      
       const results = [];
-      for (const product of products) {
-        const result = await this.updateProductPrice(product._id);
-        if (result) {
-          results.push(result);
+
+      // Tüm ürünler için fiyat güncelle
+      for (const product of allProducts) {
+        const productKey = product._id.toString();
+        const orderCount = this.orderCounts.get(productKey) || 0;
+        
+        const oldPrice = product.currentPrice || product.regularPrice;
+        const newPrice = this.calculateOrderBasedPrice(
+          product,
+          orderCount,
+          totalOrderCount
+        );
+
+        // Fiyat değişimi varsa güncelle
+        if (Math.abs(newPrice - oldPrice) > 0.01) {
+          const changePercentage = ((newPrice - oldPrice) / oldPrice) * 100;
+
+          product.previousPrice = oldPrice;
+          product.currentPrice = newPrice;
+          await product.save();
+
+          // PriceHistory'ye kaydet
+          const priceHistory = new PriceHistory({
+            productId: product._id,
+            oldPrice,
+            newPrice,
+            changePercentage: parseFloat(changePercentage.toFixed(2)),
+            reason: 'order_based' // Neden bilgisi eklenebilir
+          });
+          await priceHistory.save();
+
+          console.log(
+            `Product ${product.productName}: ${oldPrice} -> ${newPrice} ` +
+            `(${changePercentage.toFixed(2)}%) [Orders: ${orderCount}/${totalOrderCount}]`
+          );
+
+          results.push({ product, priceHistory });
         }
       }
 
       return results;
+
     } catch (error) {
-      console.error('Error updating products by place:', error);
+      console.error('Error updating prices on order:', error);
       throw error;
     }
   }
 
-  // Belirli bir yer (place) için ürün fiyat interval'lerini başlat
-  async startPlaceIntervals(placeId, intervalMs = 30000) {
+  // Periyodik sipariş verisi temizleme ve dengeleme
+  async rebalancePrices(placeId) {
     try {
-      // Önce bu place'a ait tüm interval'leri durdur
-      await this.stopPlaceIntervals(placeId);
+      // Sipariş sayılarını %35 azalt (daha hızlı eskitme - önceden %20)
+      // Bu sayede fiyatlar daha hızlı düşer
+      this.orderCounts.forEach((count, key) => {
+        this.orderCounts.set(key, Math.floor(count * 0.65)); // 0.65 = %35 azaltma
+      });
 
-      const products = await Product.find({ placeId });
-      
-      if (products.length === 0) {
-        console.log(`No products found for place ${placeId}`);
-        return;
-      }
+      // 0 olan kayıtları temizle
+      Array.from(this.orderCounts.entries()).forEach(([key, count]) => {
+        if (count === 0) {
+          this.orderCounts.delete(key);
+        }
+      });
 
-      // Place için ana interval oluştur
-      const interval = setInterval(async () => {
-        console.log(`Running scheduled update for place ${placeId}`);
-        await this.updateProductsByPlace(placeId);
-      }, intervalMs);
-
-      // Interval'i kaydet
-      this.placeIntervals.set(placeId, interval);
-      this.isRunning = true;
-      
-      console.log(`Started price updates for ${products.length} products in place ${placeId} every ${intervalMs}ms`);
-      
-      // Hemen bir güncelleme çalıştır
-      await this.updateProductsByPlace(placeId);
-      
+      console.log(`Rebalanced order counts for place ${placeId}`);
     } catch (error) {
-      console.error('Error starting place intervals:', error);
+      console.error('Error rebalancing prices:', error);
       throw error;
     }
   }
 
-  // Belirli bir ürün için interval başlat (isteğe bağlı)
-  startProductInterval(productId, intervalMs) {
-    // Önce varsa mevcut interval'i temizle
-    this.stopProductInterval(productId);
-
+  // Periyodik dengeleme interval'i başlat (opsiyonel)
+  startRebalanceInterval(placeId, intervalMs = 300000) { // 5 dakikada bir
     const interval = setInterval(async () => {
-      await this.updateProductPrice(productId);
+      await this.rebalancePrices(placeId);
     }, intervalMs);
 
-    this.intervals.set(productId, interval);
-    console.log(`Started price updates for product ${productId} every ${intervalMs}ms`);
+    this.intervals.set(`rebalance_${placeId}`, interval);
+    console.log(`Started rebalance interval for place ${placeId}`);
   }
 
-  // Belirli bir yer (place) için tüm interval'leri durdur
-  async stopPlaceIntervals(placeId) {
-    try {
-      // Place için ana interval'i durdur
-      if (this.placeIntervals.has(placeId)) {
-        clearInterval(this.placeIntervals.get(placeId));
-        this.placeIntervals.delete(placeId);
-        console.log(`Stopped price updates for all products in place ${placeId}`);
-      }
+  // Sipariş istatistiklerini getir
+  getOrderStats(placeId) {
+    const stats = {};
+    let total = 0;
 
-      // Bu place'a ait tüm ürün interval'lerini durdur
-      const products = await Product.find({ placeId });
-      for (const product of products) {
-        this.stopProductInterval(product._id);
-      }
+    this.orderCounts.forEach((count, productId) => {
+      stats[productId] = count;
+      total += count;
+    });
 
-
-      // Eğer hiç interval kalmadıysa
-      if (this.placeIntervals.size === 0 && this.intervals.size === 0) {
-        this.isRunning = false;
-      }
-      
-    } catch (error) {
-      console.error('Error stopping place intervals:', error);
-      throw error;
-    }
+    return {
+      placeId,
+      totalOrders: total,
+      productOrderCounts: stats,
+      trackedProducts: this.orderCounts.size
+    };
   }
 
-  // Belirli ürünün interval'ini durdur
-  stopProductInterval(productId) {
-    if (this.intervals.has(productId)) {
-      clearInterval(this.intervals.get(productId));
-      this.intervals.delete(productId);
-      console.log(`Stopped price updates for product ${productId}`);
-    }
+  // Sipariş verilerini sıfırla
+  resetOrderCounts(placeId) {
+    // Belirli bir place için sıfırlama yapılabilir
+    this.orderCounts.clear();
+    this.priceMomentum.clear();
+    console.log(`Reset order counts for place ${placeId}`);
   }
 
   // Tüm interval'leri durdur
   stopAllIntervals() {
-    // Tüm place interval'lerini durdur
-    this.placeIntervals.forEach((interval, placeId) => {
-      clearInterval(interval);
-    });
-    this.placeIntervals.clear();
-    
-    // Tüm ürün interval'lerini durdur
-    this.intervals.forEach((interval, productId) => {
+    this.intervals.forEach((interval) => {
       clearInterval(interval);
     });
     this.intervals.clear();
-    
     this.isRunning = false;
-    console.log('Stopped all price update intervals');
+    console.log('Stopped all intervals');
   }
 
-  // Aktif interval'leri getir
-  getActiveIntervals() {
-    return {
-      placeIntervals: Array.from(this.placeIntervals.keys()),
-      productIntervals: Array.from(this.intervals.keys())
-    };
-  }
-
-  // Çalışma durumunu kontrol et
+  // Sistem durumu
   getStatus() {
     return {
       isRunning: this.isRunning,
-      activePlaceIntervals: this.placeIntervals.size,
-      activeProductIntervals: this.intervals.size,
-      placeIds: Array.from(this.placeIntervals.keys()),
-      productIds: Array.from(this.intervals.keys())
-    };
-  }
-
-  // Belirli bir place için durum kontrolü
-  async getPlaceStatus(placeId) {
-    const products = await Product.find({ placeId });
-    const activeIntervals = this.getActiveIntervals();
-    
-    const activeProducts = products.filter(product => 
-      activeIntervals.productIntervals.includes(product._id.toString())
-    );
-    
-    const hasPlaceInterval = activeIntervals.placeIntervals.includes(placeId);
-    
-    return {
-      placeId,
-      hasActiveInterval: hasPlaceInterval,
-      totalProducts: products.length,
-      activeProducts: activeProducts.length,
-      productDetails: activeProducts.map(p => ({
-        id: p._id,
-        name: p.productName,
-        currentPrice: p.currentPrice
-      }))
+      activeIntervals: this.intervals.size,
+      trackedProducts: this.orderCounts.size,
+      totalOrders: Array.from(this.orderCounts.values())
+        .reduce((sum, count) => sum + count, 0)
     };
   }
 }
 
 module.exports = new PriceUpdater();
-
-// Tüm ürünler için 30 saniyede bir fiyat güncelleme başlat
-//priceUpdater.startAllProductsIntervals(30000);
-
-// Sadece belirli bir mekana (place) ait ürünler için fiyat güncelleme başlat
-//priceUpdater.startPlaceIntervals('placeId123', 30000);
-
-// Belirli bir ürün için fiyat güncelleme başlat
-//priceUpdater.startProductInterval('productId456', 30000);
-
-// Tüm fiyat güncellemelerini durdur
-//priceUpdater.stopAllIntervals();
-
-// Sadece belirli bir mekana (place) ait ürün güncellemelerini durdur
-//priceUpdater.stopPlaceIntervals('placeId123');
-
-// Sistem durumunu kontrol et
-//const status = priceUpdater.getStatus();
-//console.log(status);

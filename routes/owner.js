@@ -201,13 +201,10 @@ router.delete('/products/:productId', verifyToken, restrictTo('owner'), async (r
   }
 });
 
-// Dinamik fiyatlandırmayı başlatma endpoint'i
 router.post('/start-exchange/:placeId', verifyToken, restrictTo('owner'), async (req, res) => {
   try {
     const { placeId } = req.params;
-    const { intervalMs } = req.body; // İsteğe bağlı: özel interval süresi
 
-    // Place gerçekten var mı?
     const place = await Place.findById(placeId);
     if (!place) {
       return res.status(404).json({ 
@@ -216,7 +213,6 @@ router.post('/start-exchange/:placeId', verifyToken, restrictTo('owner'), async 
       });
     }
 
-    // Bu mekana ait ürünleri kontrol et
     const products = await Product.find({ placeId });
     if (products.length === 0) {
       return res.status(404).json({ 
@@ -225,16 +221,16 @@ router.post('/start-exchange/:placeId', verifyToken, restrictTo('owner'), async 
       });
     }
 
-    // Fiyat güncelleme interval'ini başlat
-    priceUpdater.startPlaceIntervals(placeId, intervalMs || 30000);
+    // Periyodik dengeleme başlat (5 dakikada bir sipariş sayılarını azaltır)
+    priceUpdater.startRebalanceInterval(placeId, 300000);
 
     res.status(200).json({
       success: true,
-      message: `Fiyat güncelleme işlemi başlatıldı. ${products.length} ürün takip ediliyor.`,
+      message: 'Sipariş bazlı fiyatlandırma sistemi aktif.',
       data: {
         place: place.name,
         productCount: products.length,
-        updateInterval: intervalMs || 30000
+        rebalanceInterval: 300000
       }
     });
 
@@ -415,6 +411,26 @@ router.put('/user/:userId', verifyToken, restrictTo('owner'), async (req, res) =
     }
     
     res.status(500).json({ message: 'Sunucu hatası', error: error.message });
+  }
+});
+
+router.post('/reset-prices/:placeId', verifyToken, restrictTo('owner'), async (req, res) => {
+  try {
+    const { placeId } = req.params;
+    priceUpdater.resetOrderCounts(placeId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Sipariş verileri ve fiyat momentum bilgileri sıfırlandı'
+    });
+
+  } catch (error) {
+    console.error('Sıfırlama hatası:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Sunucu hatası', 
+      error: error.message 
+    });
   }
 });
 

@@ -4,6 +4,7 @@ const { restrictTo } = require('../middleware/role');
 const Order = require('../models/Order');
 const Place = require('../models/Place');
 const Product = require('../models/Product');
+const priceUpdater = require('../services/PriceUpdater');
 
 const router = express.Router();
 
@@ -34,14 +35,23 @@ router.post('/create-order', verifyToken, restrictTo('owner', 'worker'), async (
 
     await newOrder.save();
 
+    // ÖNEMLİ: Sipariş edilen ürünlerin ID'lerini topla
+    const orderedProductIds = products.map(item => item.productId);
+
+    // Fiyatları güncelle (yeni dinamik sistem)
+    await priceUpdater.updatePricesOnOrder(orderedProductIds, placeId);
+
     res.status(201).json({
-      message: 'Sipariş başarıyla oluşturuldu.',
+      message: 'Sipariş başarıyla oluşturuldu ve fiyatlar güncellendi.',
       order: newOrder
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Sunucu hatası', error: error.message });
+    console.error('Sipariş hatası:', error);
+    res.status(500).json({ 
+      message: 'Sunucu hatası', 
+      error: error.message 
+    });
   }
 });
 
@@ -73,6 +83,7 @@ router.get('/get-orders/:userId', verifyToken, restrictTo('owner', 'worker'), as
     res.status(500).json({ message: 'Siparişler alınırken bir hata oluştu.' });
   }
 });
+
 
 router.delete('/orders/:orderId', verifyToken, restrictTo('worker', 'owner'), async (req, res) => {
   try {
