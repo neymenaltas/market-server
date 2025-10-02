@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Place = require('../models/Place');
 const Product = require('../models/Product');
+const Order = require('../models/Order');
 const priceUpdater = require('../services/PriceUpdater');
 
 const router = express.Router();
@@ -431,6 +432,49 @@ router.post('/reset-prices/:placeId', verifyToken, restrictTo('owner'), async (r
       message: 'Sunucu hatası', 
       error: error.message 
     });
+  }
+});
+
+// Owner'ın kendi mekanındaki tüm siparişleri görüntüleme
+router.get('/get-orders/:placeId', verifyToken, restrictTo('owner'), async (req, res) => {
+  try {
+    const { placeId } = req.params;
+    const ownerId = req.user.id;
+
+    // Önce mekanın gerçekten bu owner'a ait olduğunu kontrol et
+    const place = await Place.findOne({ 
+      _id: placeId, 
+      ownerId: ownerId 
+    });
+
+    if (!place) {
+      return res.status(404).json({ 
+        message: 'Mekan bulunamadı veya bu mekan üzerinde yetkiniz yok.' 
+      });
+    }
+
+    // Bu mekana ait tüm siparişleri getir
+    const orders = await Order.find({ placeId })
+      .populate({
+        path: 'createdBy',
+        select: 'username' // siparişi oluşturan kullanıcı bilgisi
+      })
+      .select('products productName soldPrice quantity totalAmount placeId createdAt createdBy')
+      .sort({ createdAt: -1 }); // en yeni siparişler üstte
+
+    // Orders'ı formatla - createdBy artık bir obje {_id, username}
+    const formattedOrders = orders.map(order => ({
+      ...order.toObject(),
+      createdBy: order.createdBy.username // sadece username'i döndür
+    }));
+
+    res.status(200).json({
+      count: orders.length,
+      orders: formattedOrders
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Siparişler alınırken bir hata oluştu.' });
   }
 });
 
