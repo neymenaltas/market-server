@@ -10,7 +10,7 @@ const router = express.Router();
 
 router.post('/create-order', verifyToken, restrictTo('owner', 'worker'), async (req, res) => {
   try {
-    const { placeId, products } = req.body;
+    const { placeId, products, table } = req.body;
 
     if (!placeId || !products || products.length === 0) {
       return res.status(400).json({ message: 'placeId ve en az bir ürün zorunludur.' });
@@ -29,9 +29,12 @@ router.post('/create-order', verifyToken, restrictTo('owner', 'worker'), async (
     const newOrder = new Order({
       placeId,
       products,
+      table,
       totalAmount,
       createdBy: req.user.id
     });
+
+    console.log(newOrder)
 
     await newOrder.save();
 
@@ -65,7 +68,7 @@ router.get('/get-orders/:userId', verifyToken, restrictTo('owner', 'worker'), as
         path: 'createdBy',
         select: 'username' // sadece username alanını getir
       })
-      .select('products productName soldPrice quantity totalAmount placeId createdAt createdBy')
+      .select('products productName soldPrice quantity totalAmount placeId table createdAt createdBy')
       .sort({ createdAt: -1 });
 
     // Orders'ı formatla - createdBy artık bir obje {_id, username}

@@ -459,7 +459,7 @@ router.get('/get-orders/:placeId', verifyToken, restrictTo('owner'), async (req,
         path: 'createdBy',
         select: 'username' // siparişi oluşturan kullanıcı bilgisi
       })
-      .select('products productName soldPrice quantity totalAmount placeId createdAt createdBy')
+      .select('products productName soldPrice quantity totalAmount placeId table createdAt createdBy')
       .sort({ createdAt: -1 }); // en yeni siparişler üstte
 
     // Orders'ı formatla - createdBy artık bir obje {_id, username}
