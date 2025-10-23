@@ -1,21 +1,30 @@
 const mongoose = require('mongoose');
 
-const placeSchema = new mongoose.Schema({
-  placeName: {
-    type: String,
-    required: true,
-    unique: true
+const placeSchema = new mongoose.Schema(
+  {
+    placeName: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+    ownerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    workerIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    crashMessage: {
+      type: String,
+      default: "",
+    },
   },
-  ownerId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-  },
-  workerIds: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-  }],
-}, {
-  timestamps: true
-});
+  {
+    timestamps: true,
+  }
+);
 
-module.exports = mongoose.model('Place', placeSchema);
+module.exports = mongoose.model("Place", placeSchema);

@@ -85,7 +85,7 @@ io.on('connection', (socket) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/owner', ownerRoutes);
+app.use('/api/owner', ownerRoutes(io));
 app.use('/api/worker', workerRoutes);
 app.use('/api/admin', adminRoutes);
 
