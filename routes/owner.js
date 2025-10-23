@@ -9,13 +9,8 @@ const Order = require('../models/Order');
 const priceUpdater = require('../services/PriceUpdater');
 
 
-
-
-
 module.exports = (io) => {
   const router = express.Router();
-
-  // ... diğer route'lar
 
   router.patch(
     "/crash-message/:placeId",
