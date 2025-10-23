@@ -490,6 +490,7 @@ router.get("/report", verifyToken, restrictTo("owner"), async (req, res) => {
         previousPrice: req.body.previousPrice,
         minPrice: req.body.minPrice,
         maxPrice: req.body.maxPrice,
+        previousPrice: req.body.previousPrice
       };
 
       // PlaceId'nin değiştirilmesine izin vermiyoruz
@@ -642,57 +643,57 @@ router.get("/report", verifyToken, restrictTo("owner"), async (req, res) => {
     }
   );
 
-  // Owner'ın kendi mekanındaki tüm siparişleri görüntüleme
-  router.get(
-    "/get-orders/:placeId",
-    verifyToken,
-    restrictTo("owner"),
-    async (req, res) => {
-      try {
-        const { placeId } = req.params;
-        const ownerId = req.user.id;
+// Owner'ın kendi mekanındaki tüm siparişleri görüntüleme
+router.get(
+  "/get-orders/:placeId",
+  verifyToken,
+  restrictTo("owner"),
+  async (req, res) => {
+    try {
+      const { placeId } = req.params;
+      const ownerId = req.user.id;
 
-        // Önce mekanın gerçekten bu owner'a ait olduğunu kontrol et
-        const place = await Place.findOne({
-          _id: placeId,
-          ownerId: ownerId,
+      // Önce mekanın gerçekten bu owner'a ait olduğunu kontrol et
+      const place = await Place.findOne({
+        _id: placeId,
+        ownerId: ownerId,
+      });
+
+      if (!place) {
+        return res.status(404).json({
+          message: "Mekan bulunamadı veya bu mekan üzerinde yetkiniz yok.",
         });
-
-        if (!place) {
-          return res.status(404).json({
-            message: "Mekan bulunamadı veya bu mekan üzerinde yetkiniz yok.",
-          });
-        }
-
-        // Bu mekana ait tüm siparişleri getir
-        const orders = await Order.find({ placeId })
-          .populate({
-            path: "createdBy",
-            select: "username", // siparişi oluşturan kullanıcı bilgisi
-          })
-          .select(
-            "products productName soldPrice quantity totalAmount placeId table createdAt createdBy"
-          )
-          .sort({ createdAt: -1 }); // en yeni siparişler üstte
-
-        // Orders'ı formatla - createdBy artık bir obje {_id, username}
-        const formattedOrders = orders.map((order) => ({
-          ...order.toObject(),
-          createdBy: order.createdBy.username, // sadece username'i döndür
-        }));
-
-        res.status(200).json({
-          count: orders.length,
-          orders: formattedOrders,
-        });
-      } catch (err) {
-        console.error(err);
-        res
-          .status(500)
-          .json({ message: "Siparişler alınırken bir hata oluştu." });
       }
+
+      // Bu mekana ait tüm siparişleri getir
+      const orders = await Order.find({ placeId })
+        .populate({
+          path: "createdBy",
+          select: "username", // siparişi oluşturan kullanıcı bilgisi
+        })
+        .select(
+          "products productName soldPrice quantity totalAmount placeId table createdAt createdBy"
+        )
+        .sort({ createdAt: -1 }); // en yeni siparişler üstte
+
+      // Orders'ı formatla - createdBy kontrolü ile
+      const formattedOrders = orders.map((order) => ({
+        ...order.toObject(),
+        createdBy: order.createdBy?.username || "Bilinmeyen Kullanıcı", // null/undefined kontrolü
+      }));
+
+      res.status(200).json({
+        count: orders.length,
+        orders: formattedOrders,
+      });
+    } catch (err) {
+      console.error(err);
+      res
+        .status(500)
+        .json({ message: "Siparişler alınırken bir hata oluştu." });
     }
-  );
+  }
+);
 
   // Crash message getirme
   router.get("/crash-message/:placeId", verifyToken, async (req, res) => {
