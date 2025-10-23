@@ -12,6 +12,83 @@ const priceUpdater = require('../services/PriceUpdater');
 module.exports = (io) => {
   const router = express.Router();
 
+router.get("/report", verifyToken, restrictTo("owner"), async (req, res) => {
+  try {
+    const { date, placeId } = req.query;
+
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: "Tarih parametresi gereklidir (date)",
+      });
+    }
+
+    if (!placeId) {
+      return res.status(400).json({
+        success: false,
+        message: "Place ID parametresi gereklidir (placeId)",
+      });
+    }
+
+    // Belirtilen tarihten sonraki ve belirtilen place'e ait siparişleri getir
+    const orders = await Order.find({
+      placeId: placeId,
+      createdAt: { $gte: new Date(date) },
+    });
+
+    // Ürün bazında istatistikleri hesapla
+    const productStats = {};
+    let totalSalesAmount = 0;
+
+    orders.forEach((order) => {
+      order.products.forEach((product) => {
+        const productName = product.productName;
+        const salesAmount = product.soldPrice * product.quantity;
+
+        if (!productStats[productName]) {
+          productStats[productName] = {
+            totalSalesAmount: 0,
+            totalQuantitySold: 0,
+            totalRevenue: 0, // averagePricePerUnit hesabı için
+          };
+        }
+
+        productStats[productName].totalSalesAmount += salesAmount;
+        productStats[productName].totalQuantitySold += product.quantity;
+        productStats[productName].totalRevenue += salesAmount;
+
+        totalSalesAmount += salesAmount;
+      });
+    });
+
+    // averagePricePerUnit hesapla
+    const report = {};
+    for (const [productName, stats] of Object.entries(productStats)) {
+      report[productName] = {
+        totalSalesAmount: stats.totalSalesAmount,
+        totalQuantitySold: stats.totalQuantitySold,
+        averagePricePerUnit: stats.totalSalesAmount / stats.totalQuantitySold,
+      };
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        placeId,
+        products: report,
+        totalSalesAmount,
+      },
+    });
+  } catch (error) {
+    console.error("Report error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Rapor oluşturulurken hata oluştu",
+      error: error.message,
+    });
+  }
+});
+
   router.patch(
     "/crash-message/:placeId",
     verifyToken,
